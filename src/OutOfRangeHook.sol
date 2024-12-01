@@ -2,7 +2,6 @@
 pragma solidity ^0.8.0;
 
 import {BaseHook} from "v4-periphery/src/base/hooks/BaseHook.sol";
-import {ERC1155} from "@openzeppelin/contracts/token/ERC1155/ERC1155.sol";
 import {IPoolManager} from "v4-core/interfaces/IPoolManager.sol";
 import {Hooks} from "v4-core/libraries/Hooks.sol";
 import {PoolId, PoolIdLibrary} from "v4-core/types/PoolId.sol";
@@ -26,7 +25,10 @@ contract OutOfRangeHook is BaseHook {
         IPoolManager.ModifyLiquidityParams modifyLiquidityParams;
     }
 
-    mapping(PoolId poolId => int24 lastTick) public lastTicks;
+    struct UnlockCallbackData {
+        uint256 absAmount0;
+        uint256 absAmount1;
+    }
 
     constructor(IPoolManager _manager) BaseHook(_manager) {}
 
@@ -49,16 +51,6 @@ contract OutOfRangeHook is BaseHook {
         });
     }
 
-    function afterInitialize(address, PoolKey calldata key, uint160, int24 tick)
-        external
-        override
-        onlyPoolManager
-        returns (bytes4)
-    {
-        lastTicks[key.toId()] = tick;
-        return this.afterInitialize.selector;
-    }
-
     function afterSwap(
         address sender,
         PoolKey calldata key,
@@ -66,7 +58,8 @@ contract OutOfRangeHook is BaseHook {
         BalanceDelta,
         bytes calldata
     ) external override onlyPoolManager returns (bytes4, int128) {
-        // TODO
+        // TODO: Implement moving liquidity back and forth between pool and lending protocol on tick shift.
+
         return (this.afterSwap.selector, 0);
     }
 
@@ -88,7 +81,8 @@ contract OutOfRangeHook is BaseHook {
         //     sqrtPriceX96, TickMath.getSqrtPriceAtTick(tickLower), TickMath.getSqrtPriceAtTick(tickUpper), liquidityDelta
         // );
 
-        (uint128 liquidityDelta, uint256 trueAmount0, uint256 trueAmount1) = _calculateAmountsAndLiquidity(key, tickLower, tickUpper, amount0, amount1);
+        (uint128 liquidityDelta, uint256 trueAmount0, uint256 trueAmount1) =
+            _calculateAmountsAndLiquidity(key, tickLower, tickUpper, amount0, amount1);
 
         IERC20(Currency.unwrap(key.currency0)).transferFrom(msg.sender, address(this), trueAmount0);
         IERC20(Currency.unwrap(key.currency1)).transferFrom(msg.sender, address(this), trueAmount1);
@@ -103,36 +97,73 @@ contract OutOfRangeHook is BaseHook {
         return (liquidityDelta, trueAmount0, trueAmount1);
     }
 
+    function removeLiquidity(PoolKey memory key, int24 tickLower, int24 tickUpper, uint128 liquidity)
+        external
+        returns (uint128, uint256, uint256)
+    {
+        // TODO: Add validation for whether the user actually has that liquidity.
+
+        IPoolManager.ModifyLiquidityParams memory params =
+            IPoolManager.ModifyLiquidityParams(tickLower, tickUpper, -int256(uint256(liquidity)), bytes32(0));
+
+        UnlockCallData memory unlockData = UnlockCallData(key, params);
+        UnlockCallbackData memory callbackData = abi.decode(poolManager.unlock(abi.encode(unlockData)), (UnlockCallbackData));
+
+        if (callbackData.absAmount0 > 0) {
+            IERC20(Currency.unwrap(key.currency0)).transfer(msg.sender, callbackData.absAmount0);
+        }
+        if (callbackData.absAmount1 > 0) {
+            IERC20(Currency.unwrap(key.currency1)).transfer(msg.sender, callbackData.absAmount1);
+        }
+
+        return (liquidity, callbackData.absAmount0, callbackData.absAmount1);
+    }
+
     function _unlockCallback(bytes calldata data) internal override returns (bytes memory) {
         UnlockCallData memory unlockData = abi.decode(data, (UnlockCallData));
 
         (BalanceDelta balanceDelta,) =
             poolManager.modifyLiquidity(unlockData.key, unlockData.modifyLiquidityParams, new bytes(0));
 
+        (uint256 absAmount0, uint256 absAmount1) = _settleAndTakeBalances(unlockData.key.currency0, unlockData.key.currency1, balanceDelta);
+
+        UnlockCallbackData memory callbackData = UnlockCallbackData(absAmount0, absAmount1);
+
+        return (abi.encode(callbackData));
+    }
+
+    function _settleAndTakeBalances(Currency currency0, Currency currency1, BalanceDelta balanceDelta)
+        internal
+        returns (uint256 absAmount0, uint256 absAmount1)
+    {
         int128 amount0 = balanceDelta.amount0();
         int128 amount1 = balanceDelta.amount1();
 
         if (amount0 < 0) {
-            _settle(unlockData.key.currency0, uint128(-amount0));
+            absAmount0 = uint256(uint128(-amount0));
+            _settle(currency0, absAmount0);
         } else if (amount0 > 0) {
-            _take(unlockData.key.currency0, uint128(amount0));
+            absAmount0 = uint256(uint128(amount0));
+            _take(currency0, absAmount0);
         }
 
         if (amount1 < 0) {
-            _settle(unlockData.key.currency1, uint128(-amount1));
+            absAmount1 = uint256(uint128(-amount1));
+            _settle(currency1, absAmount1);
         } else if (amount1 > 0) {
-            _take(unlockData.key.currency1, uint128(amount1));
+            absAmount1 = uint256(uint128(amount1));
+            _take(currency1, absAmount1);
         }
     }
 
-    function _settle(Currency currency, uint128 amount) internal {
+    function _settle(Currency currency, uint256 amount) internal {
         // Transfer tokens to the PM and let it know
         poolManager.sync(currency);
         currency.transfer(address(poolManager), amount);
         poolManager.settle();
     }
 
-    function _take(Currency currency, uint128 amount) internal {
+    function _take(Currency currency, uint256 amount) internal {
         // Transfer tokens from the PM
         poolManager.take(currency, address(this), amount);
     }
@@ -143,10 +174,10 @@ contract OutOfRangeHook is BaseHook {
         int24 tickUpper,
         uint256 amount0,
         uint256 amount1
-    ) internal returns (uint128, uint256, uint256) {
-        (uint160 sqrtPriceX96, int24 currentTick,,) = poolManager.getSlot0(key.toId());
+    ) internal returns (uint128 liquidityDelta, uint256 trueAmount0, uint256 trueAmount1) {
+        (uint160 sqrtPriceX96,,,) = poolManager.getSlot0(key.toId());
 
-        uint128 liquidityDelta = LiquidityAmounts.getLiquidityForAmounts(
+        liquidityDelta = LiquidityAmounts.getLiquidityForAmounts(
             sqrtPriceX96,
             TickMath.getSqrtPriceAtTick(tickLower),
             TickMath.getSqrtPriceAtTick(tickUpper),
@@ -154,10 +185,8 @@ contract OutOfRangeHook is BaseHook {
             amount1
         );
 
-        (uint256 trueAmount0, uint256 trueAmount1) = LiquidityAmounts.getAmountsForLiquidity(
+        (trueAmount0, trueAmount1) = LiquidityAmounts.getAmountsForLiquidity(
             sqrtPriceX96, TickMath.getSqrtPriceAtTick(tickLower), TickMath.getSqrtPriceAtTick(tickUpper), liquidityDelta
         );
-
-        return (liquidityDelta, trueAmount0, trueAmount1);
     }
 }
