@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: UNLICENSED
-pragma solidity ^0.8.0;
+pragma solidity ^0.8.16;
 
 import {BaseHook} from "v4-periphery/src/base/hooks/BaseHook.sol";
 import {IPoolManager} from "v4-core/interfaces/IPoolManager.sol";
@@ -21,6 +21,8 @@ contract OutOfRangeHook is BaseHook {
     using CurrencyLibrary for Currency;
     using FixedPointMathLib for uint256;
     using MinHeapLib for MinHeapLib.Heap;
+
+    error OutOfRangeHook_IndexOutOfBound();
 
     struct UnlockCallData {
         PoolKey key;
@@ -50,8 +52,8 @@ contract OutOfRangeHook is BaseHook {
 
     mapping(PoolId poolId => mapping(int24 tickLower => bytes32[] positionHashes)) private activePosHashesByTickLower;
     mapping(PoolId poolId => mapping(int24 tickUpper => bytes32[] positionHashes)) private activePosHashesByTickUpper;
-    mapping(PoolId poolId => MinHeapLib.Heap) private tickLowersDesc;
-    mapping(PoolId poolId => MinHeapLib.Heap) private tickUppersAsc;
+    mapping(PoolId poolId => MinHeapLib.Heap) private activeTickLowersDesc;
+    mapping(PoolId poolId => MinHeapLib.Heap) private activeTickUppersAsc;
 
     // TODO: Optimize storing inactive positions and moving them to liquidity pool.
     mapping(PoolId poolId => bytes32[] positionHashes) private inactivePositionHashes;
@@ -121,8 +123,14 @@ contract OutOfRangeHook is BaseHook {
         Position memory position =
             Position({tickLower: tickLower, tickUpper: tickUpper, liquidity: liquidity, owner: msg.sender, key: key});
         bytes32 posHash = keccak256(abi.encode(position));
+
         posByHash[key.toId()][posHash] = position;
-        // Other mappings would probably be updated in the nested functions.
+        posStateByHash[key.toId()][posHash] = true;
+        activePosHashesByTickLower[key.toId()][position.tickLower].push(posHash);
+        activePosHashesByTickUpper[key.toId()][position.tickUpper].push(posHash);
+        // How to not add duplicate ticks? maybe go back to the original thought of packing the tick with the truncated pos hash?
+        _heapInsertTick(activeTickLowersDesc[key.toId()], tickLower, true);
+        _heapInsertTick(activeTickUppersAsc[key.toId()], tickUpper, false);
 
         return (liquidity, trueAmount0, trueAmount1);
     }
@@ -155,8 +163,14 @@ contract OutOfRangeHook is BaseHook {
             IERC20(Currency.unwrap(key.currency1)).transfer(msg.sender, absAmount1);
         }
 
-        // Other mappings would probably be updated in the nested functions.
         delete posByHash[key.toId()][posHash];
+        bytes32[] storage inactivePositions = inactivePositionHashes[key.toId()];
+        for (uint256 i = 0; i < inactivePositions.length; i++) {
+            if (posHash == inactivePositions[i]) {
+                _removeWithoutOrder(inactivePositions, i);
+                break;
+            }
+        }
 
         return (liquidity, absAmount0, absAmount1);
     }
@@ -185,54 +199,83 @@ contract OutOfRangeHook is BaseHook {
 
     function _findAndMoveInactiveLiquidityToLending(int24 poolTick, PoolKey memory key) internal {
         int24 positionTick = type(int24).min;
-        if (tickLowersDesc[key.toId()].length() == 0) {
+        if (activeTickLowersDesc[key.toId()].length() == 0) {
             return;
         }
         for (uint256 i = 0; positionTick < poolTick && i < ITERATION_LIMIT; i++) {
-            positionTick = _heapPeekTick(tickLowersDesc[key.toId()], true);
+            positionTick = _heapPeekTick(activeTickLowersDesc[key.toId()], true);
 
-            bytes32[] storage activePosHashesForTick = activePosHashesByTickLower[key.toId()][positionTick];
-            if (activePosHashesForTick.length == 0) {
-                _heapPopTick(tickLowersDesc[key.toId()], true);
+            bytes32[] storage activePosHashesForCurrTickLower = activePosHashesByTickLower[key.toId()][positionTick];
+            if (activePosHashesForCurrTickLower.length == 0) {
+                _heapPopTick(activeTickLowersDesc[key.toId()], true);
                 continue;
             }
 
-            for (uint256 i2 = activePosHashesForTick.length - 1; i2 >= 0 && i2 < ITERATION_LIMIT; i2--) {
-                _moveLiquidityFromPoolToLending(i2, activePosHashesForTick, key);
+            for (uint256 i2 = 0; i2 < activePosHashesForCurrTickLower.length && i2 < ITERATION_LIMIT; i2++) {
+                bytes32 positionHash = activePosHashesForCurrTickLower[i2];
+
+                _moveLiquidityFromPoolToLending(i2, positionHash, activePosHashesForCurrTickLower, key);
+
+                // Remove from the corresponding `tickUpper` mapping as well.
+                Position memory position = posByHash[key.toId()][positionHash];
+                bytes32[] storage activePosHashesForCurrTickUpper = activePosHashesByTickUpper[key.toId()][position.tickUpper];
+                for (uint256 i3 = 0; i3 < activePosHashesForCurrTickUpper.length; i3++)
+                {
+                    if (activePosHashesForCurrTickUpper[i3] == positionHash) {
+                        _removeWithoutOrder(activePosHashesForCurrTickUpper, i3);
+                        break;
+                    }
+                    // Somewhere i should also check if there are still any hashes associated with this `tickUpper`
+                    // and if not remove it from the heap, but not sure if it should be here.
+                }
             }
 
-            _heapPopTick(tickLowersDesc[key.toId()], true);
-            // TODO: Check also the position's `tickUpper` in `tickUppersAsc` and remove the value if there are no other positions associated?
+            _heapPopTick(activeTickLowersDesc[key.toId()], true);
+            // TODO: Check also the position's `tickUpper` in `activeTickUppersAsc` and remove the value if there are no other positions associated?
         }
 
         positionTick = type(int24).max;
-        if (tickUppersAsc[key.toId()].length() == 0) {
+        if (activeTickUppersAsc[key.toId()].length() == 0) {
             return;
         }
         for (uint256 i = 0; positionTick > poolTick && i < ITERATION_LIMIT; i++) {
-            positionTick = _heapPeekTick(tickUppersAsc[key.toId()], false);
+            positionTick = _heapPeekTick(activeTickUppersAsc[key.toId()], false);
 
-            bytes32[] storage activePosHashesForTick = activePosHashesByTickUpper[key.toId()][positionTick];
-            if (activePosHashesForTick.length == 0) {
-                _heapPopTick(tickLowersDesc[key.toId()], true);
+            bytes32[] storage activePosHashesForCurrTickUpper = activePosHashesByTickUpper[key.toId()][positionTick];
+            if (activePosHashesForCurrTickUpper.length == 0) {
+                _heapPopTick(activeTickLowersDesc[key.toId()], true);
                 continue;
             }
 
-            for (uint256 i2 = 0; i2 < activePosHashesForTick.length && i2 < ITERATION_LIMIT; i2++) {
-                _moveLiquidityFromPoolToLending(i2, activePosHashesForTick, key);
+            for (uint256 i2 = 0; i2 < activePosHashesForCurrTickUpper.length && i2 < ITERATION_LIMIT; i2++) {
+                bytes32 positionHash = activePosHashesForCurrTickUpper[i2];
+
+                _moveLiquidityFromPoolToLending(i2, positionHash, activePosHashesForCurrTickUpper, key);
+
+                // Remove from the corresponding `tickUpper` mapping as well.
+                Position memory position = posByHash[key.toId()][positionHash];
+                bytes32[] storage activePosHashesForCurrTickLower = activePosHashesByTickLower[key.toId()][position.tickLower];
+                for (uint256 i3 = 0; i3 < activePosHashesForCurrTickLower.length; i3++)
+                {
+                    if (activePosHashesForCurrTickLower[i3] == positionHash) {
+                        _removeWithoutOrder(activePosHashesForCurrTickLower, i3);
+                        break;
+                    }
+                    // Somewhere i should also check if there are still any hashes associated with this `tickLower`
+                    // and if not remove it from the heap, but not sure if it should be here.
+                }
             }
 
-            _heapPopTick(tickUppersAsc[key.toId()], true);
-            // TODO: Check also the position's `tickUpper` in `tickUppersAsc` and remove the value if there are no other positions associated?
+            _heapPopTick(activeTickUppersAsc[key.toId()], true);
+            // TODO: Check also the position's `tickUpper` in `activeTickUppersAsc` and remove the value if there are no other positions associated?
         }
     }
 
-    function _moveLiquidityFromPoolToLending(uint256 index, bytes32[] storage activePosHashesForTick, PoolKey memory key) internal {
-        bytes32 positionHash = activePosHashesForTick[index];
+    function _moveLiquidityFromPoolToLending(uint256 index, bytes32 positionHash, bytes32[] storage activePosHashesForTick, PoolKey memory key) internal {
         Position memory position = posByHash[key.toId()][positionHash];
         // If position doesn't exist or is inactive pop it off the array.
         if (position.owner == address(0) || !posStateByHash[key.toId()][positionHash]) {
-            activePosHashesForTick.pop();
+            _removeWithoutOrder(activePosHashesForTick, index);
             // Also search and remove from `inactivePositionHashes`?
             return;
         }
@@ -331,6 +374,14 @@ contract OutOfRangeHook is BaseHook {
     // ----------------
     // Internal helpers
     // ----------------
+
+    function _removeWithoutOrder(bytes32[] storage array, uint index) internal {
+        if (index < array.length) {
+            revert OutOfRangeHook_IndexOutOfBound();
+        }
+        array[index] = array[array.length - 1];
+        array.pop();
+    }
 
     function _calculateAmountsAndLiquidity(
         PoolKey memory key,
