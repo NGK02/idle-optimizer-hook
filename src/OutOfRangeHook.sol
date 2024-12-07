@@ -82,9 +82,9 @@ contract OutOfRangeHook is BaseHook {
     // ------------------
 
     function afterSwap(
-        address sender,
+        address /* sender */,
         PoolKey calldata key,
-        IPoolManager.SwapParams calldata params,
+        IPoolManager.SwapParams calldata /* params */,
         BalanceDelta,
         bytes calldata
     ) external override onlyPoolManager returns (bytes4, int128) {
@@ -162,7 +162,7 @@ contract OutOfRangeHook is BaseHook {
     }
 
     // ------------------
-    // Internal functions
+    // Internal core functions
     // ------------------
 
     function _unlockCallback(bytes calldata data) internal override returns (bytes memory) {
@@ -179,9 +179,9 @@ contract OutOfRangeHook is BaseHook {
         return (abi.encode(callbackData));
     }
 
-    // ---------------------------------
-    // Internal pool to lending functions
-    // ---------------------------------
+    function _findAndMoveActiveLiquidityToPool(int24 poolTick, PoolKey memory key) internal {
+        // TODO: Implement function.
+    }
 
     function _findAndMoveInactiveLiquidityToLending(int24 poolTick, PoolKey memory key) internal {
         int24 positionTick = type(int24).min;
@@ -198,23 +198,7 @@ contract OutOfRangeHook is BaseHook {
             }
 
             for (uint256 i2 = activePosHashesForTick.length - 1; i2 >= 0 && i2 < ITERATION_LIMIT; i2--) {
-                bytes32 positionHash = activePosHashesForTick[i2];
-                Position memory position = posByHash[key.toId()][positionHash];
-                // If position doesn't exist or is inactive pop it off the array.
-                if (position.owner == address(0) || !posStateByHash[key.toId()][positionHash]) {
-                    activePosHashesForTick.pop();
-                    // Also search and remove from `inactivePositionHashes`?
-                    continue;
-                }
-
-                _removeLiquidityFromPoolToHook(position.tickLower, position.tickUpper, position.liquidity, position.key);
-                _addLiquidityFromHookToLending();
-
-                // Should mappings be updated here or within the functions?
-                activePosHashesForTick.pop();
-                inactivePositionHashes[key.toId()].push(positionHash);
-                posStateByHash[key.toId()][positionHash] = false;
-                // TODO: Update `activePosHashesByTickUpper`. But should it be updated here or not? How to make it more gas efficient?
+                _moveLiquidityFromPoolToLending(i2, activePosHashesForTick, key);
             }
 
             _heapPopTick(tickLowersDesc[key.toId()], true);
@@ -235,24 +219,11 @@ contract OutOfRangeHook is BaseHook {
             }
 
             for (uint256 i2 = 0; i2 < activePosHashesForTick.length && i2 < ITERATION_LIMIT; i2++) {
-                bytes32 positionHash = activePosHashesForTick[i2];
-                Position memory position = posByHash[key.toId()][positionHash];
-                // If position doesn't exist or is inactive pop it off the array.
-                if (position.owner == address(0) || !posStateByHash[key.toId()][positionHash]) {
-                    activePosHashesForTick.pop();
-                    // Also search and remove from `inactivePositionHashes`?
-                    continue;
-                }
-
-                _removeLiquidityFromPoolToHook(position.tickLower, position.tickUpper, position.liquidity, position.key);
-                _addLiquidityFromHookToLending();
-
-                // Should mappings be updated here or within the functions?
-                activePosHashesForTick.pop();
-                inactivePositionHashes[key.toId()].push(positionHash);
-                posStateByHash[key.toId()][positionHash] = false;
-                // TODO: Update `activePosHashesByTickUpper`. But should it be updated here or not? How to make it more gas efficient?
+                _moveLiquidityFromPoolToLending(i2, activePosHashesForTick, key);
             }
+
+            _heapPopTick(tickUppersAsc[key.toId()], true);
+            // TODO: Check also the position's `tickUpper` in `tickUppersAsc` and remove the value if there are no other positions associated?
         }
     }
 
@@ -276,30 +247,6 @@ contract OutOfRangeHook is BaseHook {
         // TODO: Update `activePosHashesByTickUpper`. But should it be updated here or not? How to make it more gas efficient?
     }
 
-    function _removeLiquidityFromPoolToHook(int24 tickLower, int24 tickUpper, uint128 liquidity, PoolKey memory key)
-        internal
-        returns (uint256 absAmount0, uint256 absAmount1)
-    {
-        return _modifyLiquidityFromHookToPool(tickLower, tickUpper, -int256(uint256(liquidity)), key);
-        // TODO: Add validations and think about return data.
-    }
-
-    function _addLiquidityFromHookToLending() internal {
-        // TODO: Implement function.
-    }
-
-    // ---------------------------------
-    // Internal lending to pool functions
-    // ---------------------------------
-
-    function _findAndMoveActiveLiquidityToPool(int24 poolTick, PoolKey memory key) internal {
-        // TODO: Implement function.
-    }
-
-    function _removeLiquidityFromLendingToHook() internal returns (uint256 absAmount0, uint256 absAmount1) {
-        // TODO: Implement function.
-    }
-
     function _addLiquidityFromHookToPool(int24 tickLower, int24 tickUpper, uint128 liquidity, PoolKey memory key)
         internal
         returns (uint256 absAmount0, uint256 absAmount1)
@@ -308,9 +255,13 @@ contract OutOfRangeHook is BaseHook {
         // TODO: Add validations and think about return data.
     }
 
-    // ---------------
-    // Internal helpers
-    // ---------------
+    function _removeLiquidityFromPoolToHook(int24 tickLower, int24 tickUpper, uint128 liquidity, PoolKey memory key)
+        internal
+        returns (uint256 absAmount0, uint256 absAmount1)
+    {
+        return _modifyLiquidityFromHookToPool(tickLower, tickUpper, -int256(uint256(liquidity)), key);
+        // TODO: Add validations and think about return data.
+    }
 
     function _modifyLiquidityFromHookToPool(int24 tickLower, int24 tickUpper, int256 liquidity, PoolKey memory key)
         internal
@@ -328,6 +279,18 @@ contract OutOfRangeHook is BaseHook {
 
         // TODO: Add validations and think about return data.
     }
+
+    function _addLiquidityFromHookToLending() internal {
+        // TODO: Implement function.
+    }
+
+    function _removeLiquidityFromLendingToHook() internal returns (uint256 absAmount0, uint256 absAmount1) {
+        // TODO: Implement function.
+    }
+
+    // --------------------------------
+    // Internal balance delta functions
+    // --------------------------------
 
     function _settleAndTakeBalances(Currency currency0, Currency currency1, BalanceDelta balanceDelta)
         internal
@@ -365,6 +328,10 @@ contract OutOfRangeHook is BaseHook {
         poolManager.take(currency, address(this), amount);
     }
 
+    // ----------------
+    // Internal helpers
+    // ----------------
+
     function _calculateAmountsAndLiquidity(
         PoolKey memory key,
         int24 tickLower,
@@ -387,9 +354,9 @@ contract OutOfRangeHook is BaseHook {
         );
     }
 
-    // --------------------
+    // ---------------------
     // Internal heap helpers
-    // --------------------
+    // ---------------------
 
     function _heapInsertTick(MinHeapLib.Heap storage heap, int24 tick, bool isMaxHeap) internal {
         uint256 unsignedTick = uint256(int256(tick) + int256(OFFSET));
