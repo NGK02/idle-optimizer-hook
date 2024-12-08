@@ -30,7 +30,7 @@ contract IdleOptimizerHookTest is Test, Deployers {
 
     function setUp() public {
         console.log("`setUp` reached!");
-        
+
         // Deploy v4 core contracts
         deployFreshManagerAndRouters();
 
@@ -96,7 +96,8 @@ contract IdleOptimizerHookTest is Test, Deployers {
         int24 tickLower = tick - key.tickSpacing;
         int24 tickUpper = tick + key.tickSpacing;
 
-        (uint128 expectedLiquidityInPool,,) = hook.addLiquidity(key, tickLower, tickUpper, initialAmount0, initialAmount1);
+        (uint128 expectedLiquidityInPool,,) =
+            hook.addLiquidity(key, tickLower, tickUpper, initialAmount0, initialAmount1);
 
         IdleOptimizerHook.Position memory expectedPosition = IdleOptimizerHook.Position({
             tickLower: tickLower,
@@ -115,7 +116,8 @@ contract IdleOptimizerHookTest is Test, Deployers {
         bytes32[] memory resultActivePosHashesByTickUpper = hook.getPositionHashesByTickUpper(key.toId(), tickUpper);
         uint256 resultActiveTickUppersCount = hook.getactiveTickUppersAscLength(key.toId());
         uint256 resultActiveTickLowersCount = hook.getactiveTickLowersDescLength(key.toId());
-        (uint128 resultLiquidityInPool,,) = manager.getPositionInfo(key.toId(), address(hook), tickLower, tickUpper, bytes32(0));
+        (uint128 resultLiquidityInPool,,) =
+            manager.getPositionInfo(key.toId(), address(hook), tickLower, tickUpper, bytes32(0));
 
         // Is there a point to comparing the positions themselves?
         assertEq(expectedPosHash, resultPosHash);

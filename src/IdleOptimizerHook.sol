@@ -150,7 +150,6 @@ contract IdleOptimizerHook is BaseHook {
 
         (, int24 currentTick,,) = poolManager.getSlot0(key.toId());
         if (tickLower <= currentTick && tickUpper >= currentTick) {
-
             console.log("`addLiquidity` 2 reached! adding liquidity to pool!");
             console.log("`currentTick`: ", currentTick);
             console.log("`tickLower`: ", tickLower);
@@ -169,7 +168,6 @@ contract IdleOptimizerHook is BaseHook {
             activePosHashesByTickLower[key.toId()][position.tickLower].push(posHash);
             activePosHashesByTickUpper[key.toId()][position.tickUpper].push(posHash);
         } else {
-
             console.log("`addLiquidity` 2 reached! adding liquidity to lending!");
             console.log("`currentTick`: ", currentTick);
             console.log("`tickLower`: ", tickLower);
@@ -627,7 +625,7 @@ contract IdleOptimizerHook is BaseHook {
         return activeTickLowersDesc[poolId].length();
     }
 
-        function getactiveTickUppersAscLength(PoolId poolId) external view returns (uint256) {
+    function getactiveTickUppersAscLength(PoolId poolId) external view returns (uint256) {
         return activeTickUppersAsc[poolId].length();
     }
 }
