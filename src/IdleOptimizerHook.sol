@@ -191,7 +191,7 @@ contract IdleOptimizerHook is BaseHook {
             (amount0, amount1) = _removeLiquidityFromPoolToHook(tickLower, tickUpper, liquidity, key);
 
             // Here i should also probably check if there are still any hashes
-            // associated with this `tickUpper` and `tickLower` and if not 
+            // associated with this `tickUpper` and `tickLower` and if not
             // remove it from the heap i think.
             delete posByHash[key.toId()][posHash];
             delete posStateByHash[key.toId()][posHash];
