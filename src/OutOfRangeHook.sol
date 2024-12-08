@@ -8,12 +8,19 @@ import {PoolId, PoolIdLibrary} from "v4-core/types/PoolId.sol";
 import {PoolKey} from "v4-core/types/PoolKey.sol";
 import {Currency, CurrencyLibrary} from "v4-core/types/Currency.sol";
 import {StateLibrary} from "v4-core/libraries/StateLibrary.sol";
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {TickMath} from "v4-core/libraries/TickMath.sol";
 import {BalanceDelta} from "v4-core/types/BalanceDelta.sol";
 import {LiquidityAmounts} from "@uniswap/v4-core/test/utils/LiquidityAmounts.sol";
+
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+
 import {FixedPointMathLib} from "solmate/src/utils/FixedPointMathLib.sol";
+
 import {MinHeapLib} from "solady/utils/MinHeapLib.sol";
+
+import {IPool} from "@aave/core-v3/contracts/interfaces/IPool.sol";
+import {IAToken} from "@aave/core-v3/contracts/interfaces/IAToken.sol";
+import {DataTypes} from "@aave/core-v3/contracts/protocol/libraries/types/DataTypes.sol";
 
 contract OutOfRangeHook is BaseHook {
     using StateLibrary for IPoolManager;
@@ -42,9 +49,19 @@ contract OutOfRangeHook is BaseHook {
         PoolKey key;
     }
 
+    struct LendingPosition {
+        address token0;
+        address token1;
+        uint256 amount0;
+        uint256 amount1;
+    }
+
     // Offset to shift `int24` into `uint256` range.
     uint256 constant OFFSET = 1 << 23;
     uint256 constant ITERATION_LIMIT = 200;
+
+    // Maybe this should be private?
+    IPool public immutable lendingPool;
 
     // These 2 probably don't need to have an outer mapping by poolId since the hash already contains the `PoolKey`.
     mapping(PoolId poolId => mapping(bytes32 positionHash => Position position)) private posByHash;
@@ -55,10 +72,14 @@ contract OutOfRangeHook is BaseHook {
     mapping(PoolId poolId => MinHeapLib.Heap) private activeTickLowersDesc;
     mapping(PoolId poolId => MinHeapLib.Heap) private activeTickUppersAsc;
 
+    mapping(bytes32 positionHash => LendingPosition lendingPosition) private lendingPosByPosHash;
+
     // TODO: Optimize storing inactive positions and moving them to liquidity pool.
     mapping(PoolId poolId => bytes32[] positionHashes) private inactivePositionHashes;
 
-    constructor(IPoolManager _manager) BaseHook(_manager) {}
+    constructor(IPoolManager _manager, address _lendingPool) BaseHook(_manager) {
+        lendingPool = IPool(_lendingPool);
+    }
 
     function getHookPermissions() public pure override returns (Hooks.Permissions memory) {
         return Hooks.Permissions({
@@ -83,10 +104,11 @@ contract OutOfRangeHook is BaseHook {
     // External functions
     // ------------------
 
+    // TODO: Implement working with native ETH and not just ERC20s.
     function afterSwap(
-        address /* sender */,
+        address, /* sender */
         PoolKey calldata key,
-        IPoolManager.SwapParams calldata /* params */,
+        IPoolManager.SwapParams calldata, /* params */
         BalanceDelta,
         bytes calldata
     ) external override onlyPoolManager returns (bytes4, int128) {
@@ -113,16 +135,17 @@ contract OutOfRangeHook is BaseHook {
         IERC20(Currency.unwrap(key.currency0)).transferFrom(msg.sender, address(this), trueAmount0);
         IERC20(Currency.unwrap(key.currency1)).transferFrom(msg.sender, address(this), trueAmount1);
 
+        Position memory position =
+            Position({tickLower: tickLower, tickUpper: tickUpper, liquidity: liquidity, owner: msg.sender, key: key});
+        bytes32 posHash = keccak256(abi.encode(position));
+
         (, int24 currentTick,,) = poolManager.getSlot0(key.toId());
         if (tickLower <= currentTick && tickUpper <= currentTick) {
             (trueAmount0, trueAmount1) = _addLiquidityFromHookToPool(tickLower, tickUpper, liquidity, key);
         } else {
-            _addLiquidityFromHookToLending();
+            // Not sure if i should use `trueAmount0` and `trueAmount1` here or `amount0` and `amount1`.
+            _addLiquidityFromHookToLending(posHash, key, trueAmount0, trueAmount1);
         }
-
-        Position memory position =
-            Position({tickLower: tickLower, tickUpper: tickUpper, liquidity: liquidity, owner: msg.sender, key: key});
-        bytes32 posHash = keccak256(abi.encode(position));
 
         posByHash[key.toId()][posHash] = position;
         posStateByHash[key.toId()][posHash] = true;
@@ -147,23 +170,24 @@ contract OutOfRangeHook is BaseHook {
         bytes32 posHash = keccak256(abi.encode(position));
         bool isActive = posStateByHash[key.toId()][posHash];
 
-        uint256 absAmount0;
-        uint256 absAmount1;
+        uint256 amount0;
+        uint256 amount1;
 
         if (isActive) {
-            (absAmount0, absAmount1) = _removeLiquidityFromPoolToHook(tickLower, tickUpper, liquidity, key);
+            (amount0, amount1) = _removeLiquidityFromPoolToHook(tickLower, tickUpper, liquidity, key);
         } else {
-            (absAmount0, absAmount1) = _removeLiquidityFromLendingToHook();
+            (amount0, amount1) = _removeLiquidityFromLendingToHook(posHash);
         }
 
-        if (absAmount0 > 0) {
-            IERC20(Currency.unwrap(key.currency0)).transfer(msg.sender, absAmount0);
+        if (amount0 > 0) {
+            IERC20(Currency.unwrap(key.currency0)).transfer(msg.sender, amount0);
         }
-        if (absAmount1 > 0) {
-            IERC20(Currency.unwrap(key.currency1)).transfer(msg.sender, absAmount1);
+        if (amount1 > 0) {
+            IERC20(Currency.unwrap(key.currency1)).transfer(msg.sender, amount1);
         }
 
         delete posByHash[key.toId()][posHash];
+        delete lendingPosByPosHash[posHash];
         bytes32[] storage inactivePositions = inactivePositionHashes[key.toId()];
         for (uint256 i = 0; i < inactivePositions.length; i++) {
             if (posHash == inactivePositions[i]) {
@@ -172,7 +196,7 @@ contract OutOfRangeHook is BaseHook {
             }
         }
 
-        return (liquidity, absAmount0, absAmount1);
+        return (liquidity, amount0, amount1);
     }
 
     // ------------------
@@ -194,7 +218,33 @@ contract OutOfRangeHook is BaseHook {
     }
 
     function _findAndMoveActiveLiquidityToPool(int24 poolTick, PoolKey memory key) internal {
-        // TODO: Implement function.
+        bytes32[] storage currInactivePosHashes = inactivePositionHashes[key.toId()];
+
+        if (currInactivePosHashes.length == 0) {
+            return;
+        }
+        // TODO: Implement a more efficient way to find inactive positions that became activated.
+        for (uint256 i = 0; i < currInactivePosHashes.length && i < ITERATION_LIMIT; i++) {
+            bytes32 posHash = currInactivePosHashes[i];
+            Position memory position = posByHash[key.toId()][posHash];
+
+            if (position.tickLower < poolTick && position.tickUpper > poolTick) {
+                (uint256 amount0, uint256 amount1) = _removeLiquidityFromLendingToHook(posHash);
+                _addLiquidityFromHookToLending(posHash, key, amount0, amount1);
+                
+                // Should part of the state be updated after removal and part of it after adding (probably for reentrancy).
+                // For ex. deleting active positions only after removal and adding inactive positions after only after adding
+                // instead of all at once in the end.
+                _removeWithoutOrder(currInactivePosHashes, i);
+                delete lendingPosByPosHash[posHash];
+                
+                posStateByHash[key.toId()][posHash] = true;
+                activePosHashesByTickLower[key.toId()][position.tickLower].push(posHash);
+                activePosHashesByTickUpper[key.toId()][position.tickUpper].push(posHash);
+                // TODO: Again the issue is how to update the 2 heaps (`activeTickLowersDesc` and `activeTickUppersAsc`) 
+                // if a tick has become "activated" by adding an active position to it's mapping.
+            }
+        }
     }
 
     function _findAndMoveInactiveLiquidityToLending(int24 poolTick, PoolKey memory key) internal {
@@ -218,9 +268,9 @@ contract OutOfRangeHook is BaseHook {
 
                 // Remove from the corresponding `tickUpper` mapping as well.
                 Position memory position = posByHash[key.toId()][positionHash];
-                bytes32[] storage activePosHashesForCurrTickUpper = activePosHashesByTickUpper[key.toId()][position.tickUpper];
-                for (uint256 i3 = 0; i3 < activePosHashesForCurrTickUpper.length; i3++)
-                {
+                bytes32[] storage activePosHashesForCurrTickUpper =
+                    activePosHashesByTickUpper[key.toId()][position.tickUpper];
+                for (uint256 i3 = 0; i3 < activePosHashesForCurrTickUpper.length; i3++) {
                     if (activePosHashesForCurrTickUpper[i3] == positionHash) {
                         _removeWithoutOrder(activePosHashesForCurrTickUpper, i3);
                         break;
@@ -254,9 +304,9 @@ contract OutOfRangeHook is BaseHook {
 
                 // Remove from the corresponding `tickUpper` mapping as well.
                 Position memory position = posByHash[key.toId()][positionHash];
-                bytes32[] storage activePosHashesForCurrTickLower = activePosHashesByTickLower[key.toId()][position.tickLower];
-                for (uint256 i3 = 0; i3 < activePosHashesForCurrTickLower.length; i3++)
-                {
+                bytes32[] storage activePosHashesForCurrTickLower =
+                    activePosHashesByTickLower[key.toId()][position.tickLower];
+                for (uint256 i3 = 0; i3 < activePosHashesForCurrTickLower.length; i3++) {
                     if (activePosHashesForCurrTickLower[i3] == positionHash) {
                         _removeWithoutOrder(activePosHashesForCurrTickLower, i3);
                         break;
@@ -271,7 +321,12 @@ contract OutOfRangeHook is BaseHook {
         }
     }
 
-    function _moveLiquidityFromPoolToLending(uint256 index, bytes32 positionHash, bytes32[] storage activePosHashesForTick, PoolKey memory key) internal {
+    function _moveLiquidityFromPoolToLending(
+        uint256 index,
+        bytes32 positionHash,
+        bytes32[] storage activePosHashesForTick,
+        PoolKey memory key
+    ) internal {
         Position memory position = posByHash[key.toId()][positionHash];
         // If position doesn't exist or is inactive pop it off the array.
         if (position.owner == address(0) || !posStateByHash[key.toId()][positionHash]) {
@@ -280,14 +335,22 @@ contract OutOfRangeHook is BaseHook {
             return;
         }
 
-        _removeLiquidityFromPoolToHook(position.tickLower, position.tickUpper, position.liquidity, position.key);
-        _addLiquidityFromHookToLending();
+        (uint256 amount0, uint256 amount1) =
+            _removeLiquidityFromPoolToHook(position.tickLower, position.tickUpper, position.liquidity, position.key);
+        _addLiquidityFromHookToLending(positionHash, key, amount0, amount1);
 
         // Should mappings be updated here or within the functions?
         activePosHashesForTick.pop();
-        inactivePositionHashes[key.toId()].push(positionHash);
         posStateByHash[key.toId()][positionHash] = false;
-        // TODO: Update `activePosHashesByTickUpper`. But should it be updated here or not? How to make it more gas efficient?
+
+        inactivePositionHashes[key.toId()].push(positionHash);
+        LendingPosition memory lendingPosition = LendingPosition({
+            token0: Currency.unwrap(position.key.currency0),
+            token1: Currency.unwrap(position.key.currency1),
+            amount0: amount0,
+            amount1: amount1
+        });
+        lendingPosByPosHash[positionHash] = lendingPosition;
     }
 
     function _addLiquidityFromHookToPool(int24 tickLower, int24 tickUpper, uint128 liquidity, PoolKey memory key)
@@ -319,16 +382,40 @@ contract OutOfRangeHook is BaseHook {
 
         absAmount0 = callbackData.absAmount0;
         absAmount1 = callbackData.absAmount1;
-
         // TODO: Add validations and think about return data.
     }
 
-    function _addLiquidityFromHookToLending() internal {
-        // TODO: Implement function.
+    function _addLiquidityFromHookToLending(bytes32 positionHash, PoolKey memory key, uint256 amount0, uint256 amount1)
+        internal
+    {
+        Position memory position = posByHash[key.toId()][positionHash];
+
+        address token0 = Currency.unwrap(position.key.currency0);
+        address token1 = Currency.unwrap(position.key.currency1);
+
+        if (amount0 > 0) {
+            IERC20(token0).approve(address(lendingPool), amount0);
+            lendingPool.supply(token0, amount0, address(this), 0);
+        }
+        if (amount1 > 0) {
+            IERC20(token1).approve(address(lendingPool), amount1);
+            lendingPool.supply(token1, amount1, address(this), 0);
+        }
     }
 
-    function _removeLiquidityFromLendingToHook() internal returns (uint256 absAmount0, uint256 absAmount1) {
-        // TODO: Implement function.
+    function _removeLiquidityFromLendingToHook(bytes32 posHash) 
+        internal 
+        returns (uint256 amount0, uint256 amount1) 
+    {
+        //Position memory position = posByHash[key.toId()][posHash];
+        LendingPosition memory lendingPos = lendingPosByPosHash[posHash];
+
+        if (lendingPos.amount0 > 0) {
+            amount0 = lendingPool.withdraw(lendingPos.token0, lendingPos.amount0, address(this));
+        }
+        if (lendingPos.amount1 > 0) {
+            amount1 = lendingPool.withdraw(lendingPos.token1, lendingPos.amount1, address(this));
+        }
     }
 
     // --------------------------------
@@ -375,7 +462,7 @@ contract OutOfRangeHook is BaseHook {
     // Internal helpers
     // ----------------
 
-    function _removeWithoutOrder(bytes32[] storage array, uint index) internal {
+    function _removeWithoutOrder(bytes32[] storage array, uint256 index) internal {
         if (index < array.length) {
             revert OutOfRangeHook_IndexOutOfBound();
         }
