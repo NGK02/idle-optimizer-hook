@@ -142,18 +142,32 @@ contract IdleOptimizerHook is BaseHook {
         (, int24 currentTick,,) = poolManager.getSlot0(key.toId());
         if (tickLower <= currentTick && tickUpper <= currentTick) {
             (trueAmount0, trueAmount1) = _addLiquidityFromHookToPool(tickLower, tickUpper, liquidity, key);
+
+            posByHash[key.toId()][posHash] = position;
+            posStateByHash[key.toId()][posHash] = true;
+            if (activePosHashesByTickLower[key.toId()][position.tickLower].length == 0) {
+                _heapInsertTick(activeTickLowersDesc[key.toId()], tickLower, true);
+            }
+            if (activePosHashesByTickUpper[key.toId()][position.tickUpper].length == 0) {
+                _heapInsertTick(activeTickUppersAsc[key.toId()], tickUpper, false);
+            }
+            activePosHashesByTickLower[key.toId()][position.tickLower].push(posHash);
+            activePosHashesByTickUpper[key.toId()][position.tickUpper].push(posHash);
         } else {
             // Not sure if i should use `trueAmount0` and `trueAmount1` here or `amount0` and `amount1`.
             _addLiquidityFromHookToLending(posHash, key, trueAmount0, trueAmount1);
-        }
 
-        posByHash[key.toId()][posHash] = position;
-        posStateByHash[key.toId()][posHash] = true;
-        activePosHashesByTickLower[key.toId()][position.tickLower].push(posHash);
-        activePosHashesByTickUpper[key.toId()][position.tickUpper].push(posHash);
-        // How to not add duplicate ticks? maybe go back to the original thought of packing the tick with the truncated pos hash?
-        _heapInsertTick(activeTickLowersDesc[key.toId()], tickLower, true);
-        _heapInsertTick(activeTickUppersAsc[key.toId()], tickUpper, false);
+            posByHash[key.toId()][posHash] = position;
+            posStateByHash[key.toId()][posHash] = false;
+            LendingPosition memory lendingPosition = LendingPosition({
+                token0: Currency.unwrap(key.currency0),
+                token1: Currency.unwrap(key.currency1),
+                amount0: trueAmount0,
+                amount1: trueAmount1
+            });
+            lendingPosByPosHash[posHash] = lendingPosition;
+            inactivePositionHashes[key.toId()].push(posHash);
+        }
 
         return (liquidity, trueAmount0, trueAmount1);
     }
@@ -175,8 +189,28 @@ contract IdleOptimizerHook is BaseHook {
 
         if (isActive) {
             (amount0, amount1) = _removeLiquidityFromPoolToHook(tickLower, tickUpper, liquidity, key);
+
+            // Here i should also probably check if there are still any hashes
+            // associated with this `tickUpper` and `tickLower` and if not 
+            // remove it from the heap i think.
+            delete posByHash[key.toId()][posHash];
+            delete posStateByHash[key.toId()][posHash];
+            delete activePosHashesByTickLower[key.toId()][tickLower];
+            delete activePosHashesByTickUpper[key.toId()][tickUpper];
+            // `if (activePosHashesByTickLower[key.toId()][tickLower].length == 0)` then delete the tick from the heap as well.
         } else {
             (amount0, amount1) = _removeLiquidityFromLendingToHook(posHash);
+
+            delete posByHash[key.toId()][posHash];
+            delete posStateByHash[key.toId()][posHash];
+            delete lendingPosByPosHash[posHash];
+            bytes32[] storage inactivePositions = inactivePositionHashes[key.toId()];
+            for (uint256 i = 0; i < inactivePositions.length; i++) {
+                if (posHash == inactivePositions[i]) {
+                    _removeWithoutOrder(inactivePositions, i);
+                    break;
+                }
+            }
         }
 
         if (amount0 > 0) {
@@ -184,16 +218,6 @@ contract IdleOptimizerHook is BaseHook {
         }
         if (amount1 > 0) {
             IERC20(Currency.unwrap(key.currency1)).transfer(msg.sender, amount1);
-        }
-
-        delete posByHash[key.toId()][posHash];
-        delete lendingPosByPosHash[posHash];
-        bytes32[] storage inactivePositions = inactivePositionHashes[key.toId()];
-        for (uint256 i = 0; i < inactivePositions.length; i++) {
-            if (posHash == inactivePositions[i]) {
-                _removeWithoutOrder(inactivePositions, i);
-                break;
-            }
         }
 
         return (liquidity, amount0, amount1);
@@ -231,17 +255,17 @@ contract IdleOptimizerHook is BaseHook {
             if (position.tickLower < poolTick && position.tickUpper > poolTick) {
                 (uint256 amount0, uint256 amount1) = _removeLiquidityFromLendingToHook(posHash);
                 _addLiquidityFromHookToLending(posHash, key, amount0, amount1);
-                
+
                 // Should part of the state be updated after removal and part of it after adding (probably for reentrancy).
                 // For ex. deleting active positions only after removal and adding inactive positions after only after adding
                 // instead of all at once in the end.
                 _removeWithoutOrder(currInactivePosHashes, i);
                 delete lendingPosByPosHash[posHash];
-                
+
                 posStateByHash[key.toId()][posHash] = true;
                 activePosHashesByTickLower[key.toId()][position.tickLower].push(posHash);
                 activePosHashesByTickUpper[key.toId()][position.tickUpper].push(posHash);
-                // TODO: Again the issue is how to update the 2 heaps (`activeTickLowersDesc` and `activeTickUppersAsc`) 
+                // TODO: Again the issue is how to update the 2 heaps (`activeTickLowersDesc` and `activeTickUppersAsc`)
                 // if a tick has become "activated" by adding an active position to it's mapping.
             }
         }
@@ -403,10 +427,7 @@ contract IdleOptimizerHook is BaseHook {
         }
     }
 
-    function _removeLiquidityFromLendingToHook(bytes32 posHash) 
-        internal 
-        returns (uint256 amount0, uint256 amount1) 
-    {
+    function _removeLiquidityFromLendingToHook(bytes32 posHash) internal returns (uint256 amount0, uint256 amount1) {
         //Position memory position = posByHash[key.toId()][posHash];
         LendingPosition memory lendingPos = lendingPosByPosHash[posHash];
 
