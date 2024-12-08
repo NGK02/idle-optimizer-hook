@@ -144,7 +144,13 @@ contract IdleOptimizerHook is BaseHook {
         bytes32 posHash = keccak256(abi.encode(position));
 
         (, int24 currentTick,,) = poolManager.getSlot0(key.toId());
-        if (tickLower <= currentTick && tickUpper <= currentTick) {
+        if (tickLower <= currentTick && tickUpper >= currentTick) {
+
+            console.log("`addLiquidity` 2 reached! adding liquidity to pool!");
+            console.log("`currentTick`: ", currentTick);
+            console.log("`tickLower`: ", tickLower);
+            console.log("`tickUpper`: ", tickUpper);
+
             (trueAmount0, trueAmount1) = _addLiquidityFromHookToPool(tickLower, tickUpper, liquidity, key);
 
             posByHash[key.toId()][posHash] = position;
@@ -158,6 +164,12 @@ contract IdleOptimizerHook is BaseHook {
             activePosHashesByTickLower[key.toId()][position.tickLower].push(posHash);
             activePosHashesByTickUpper[key.toId()][position.tickUpper].push(posHash);
         } else {
+
+            console.log("`addLiquidity` 2 reached! adding liquidity to lending!");
+            console.log("`currentTick`: ", currentTick);
+            console.log("`tickLower`: ", tickLower);
+            console.log("`tickUpper`: ", tickUpper);
+            
             // Not sure if i should use `trueAmount0` and `trueAmount1` here or `amount0` and `amount1`.
             _addLiquidityFromHookToLending(posHash, key, trueAmount0, trueAmount1);
 
