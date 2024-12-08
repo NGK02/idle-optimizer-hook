@@ -22,6 +22,8 @@ import {IPool} from "@aave/core-v3/contracts/interfaces/IPool.sol";
 import {IAToken} from "@aave/core-v3/contracts/interfaces/IAToken.sol";
 import {DataTypes} from "@aave/core-v3/contracts/protocol/libraries/types/DataTypes.sol";
 
+import {console} from "forge-std/Test.sol";
+
 contract IdleOptimizerHook is BaseHook {
     using StateLibrary for IPoolManager;
     using PoolIdLibrary for PoolKey;
@@ -129,6 +131,8 @@ contract IdleOptimizerHook is BaseHook {
         external
         returns (uint128, uint256, uint256)
     {
+        console.log("`addLiquidity` reached!");
+
         (uint128 liquidity, uint256 trueAmount0, uint256 trueAmount1) =
             _calculateAmountsAndLiquidity(key, tickLower, tickUpper, amount0, amount1);
 
@@ -381,6 +385,8 @@ contract IdleOptimizerHook is BaseHook {
         internal
         returns (uint256 absAmount0, uint256 absAmount1)
     {
+        console.log("`_addLiquidityFromHookToPool` reached!");
+
         return _modifyLiquidityFromHookToPool(tickLower, tickUpper, int256(uint256(liquidity)), key);
         // TODO: Add validations and think about return data.
     }
@@ -397,6 +403,8 @@ contract IdleOptimizerHook is BaseHook {
         internal
         returns (uint256 absAmount0, uint256 absAmount1)
     {
+        console.log("`_modifyLiquidityFromHookToPool` reached!");
+
         IPoolManager.ModifyLiquidityParams memory params =
             IPoolManager.ModifyLiquidityParams(tickLower, tickUpper, liquidity, bytes32(0));
 
@@ -549,5 +557,41 @@ contract IdleOptimizerHook is BaseHook {
             unsignedTick = result;
         }
         tick = int24(int256(unsignedTick) - int256(OFFSET));
+    }
+
+    // -------------------------
+    // External getter functions
+    // -------------------------
+
+    function getPosition(PoolId poolId, bytes32 positionHash) external view returns (Position memory) {
+        return posByHash[poolId][positionHash];
+    }
+
+    function getPositionState(PoolId poolId, bytes32 positionHash) external view returns (bool) {
+        return posStateByHash[poolId][positionHash];
+    }
+
+    function getPositionHashesByTickLower(PoolId poolId, int24 tickLower) external view returns (bytes32[] memory) {
+        return activePosHashesByTickLower[poolId][tickLower];
+    }
+
+    function getPositionHashesByTickUpper(PoolId poolId, int24 tickUpper) external view returns (bytes32[] memory) {
+        return activePosHashesByTickUpper[poolId][tickUpper];
+    }
+
+    function getLendingPosition(bytes32 positionHash) external view returns (LendingPosition memory) {
+        return lendingPosByPosHash[positionHash];
+    }
+
+    function getInactivePositionHashes(PoolId poolId) external view returns (bytes32[] memory) {
+        return inactivePositionHashes[poolId];
+    }
+
+    function getactiveTickLowersDescLength(PoolId poolId) external view returns (uint256) {
+        return activeTickLowersDesc[poolId].length();
+    }
+
+        function getactiveTickUppersAscLength(PoolId poolId) external view returns (uint256) {
+        return activeTickUppersAsc[poolId].length();
     }
 }

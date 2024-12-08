@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.26;
 
-import {Test} from "forge-std/Test.sol";
+import {Test, console} from "forge-std/Test.sol";
 
 import {Deployers} from "@uniswap/v4-core/test/utils/Deployers.sol";
 import {PoolSwapTest} from "v4-core/test/PoolSwapTest.sol";
@@ -29,6 +29,8 @@ contract IdleOptimizerHookTest is Test, Deployers {
     IdleOptimizerHook hook;
 
     function setUp() public {
+        console.log("`setUp` reached!");
+        
         // Deploy v4 core contracts
         deployFreshManagerAndRouters();
 
@@ -38,7 +40,8 @@ contract IdleOptimizerHookTest is Test, Deployers {
         // Deploy our hook
         uint160 flags = uint160(Hooks.AFTER_SWAP_FLAG);
         address hookAddress = address(flags);
-        deployCodeTo("IdleOptimizerHook.t.sol", abi.encode(manager, ""), hookAddress);
+        // TODO: Add a dummy implementation of the lending pool contract for testing.
+        deployCodeTo("IdleOptimizerHook.sol", abi.encode(manager, address(0)), hookAddress);
         hook = IdleOptimizerHook(hookAddress);
 
         // Approve our hook address to spend these tokens as well
@@ -85,6 +88,40 @@ contract IdleOptimizerHookTest is Test, Deployers {
     }
 
     function test_addLiquidityInRange() public {
-        
+        console.log("`test_addLiquidityInRange` reached!");
+
+        (, int24 tick,,) = manager.getSlot0(key.toId());
+        uint256 initialAmount0 = 1 ether;
+        uint256 initialAmount1 = 1 ether;
+        int24 tickLower = tick - key.tickSpacing;
+        int24 tickUpper = tick + key.tickSpacing;
+
+        (uint128 liquidity,,) = hook.addLiquidity(key, tickLower, tickUpper, initialAmount0, initialAmount1);
+
+        IdleOptimizerHook.Position memory expectedPosition = IdleOptimizerHook.Position({
+            tickLower: tickLower,
+            tickUpper: tickUpper,
+            liquidity: liquidity,
+            owner: address(this),
+            key: key
+        });
+        bytes32 expectedPosHash = keccak256(abi.encode(expectedPosition));
+        bool expectedPosIsActive = true;
+
+        IdleOptimizerHook.Position memory resultPosition = hook.getPosition(key.toId(), expectedPosHash);
+        bytes32 resultPosHash = keccak256(abi.encode(resultPosition));
+        bool resultPosIsActive = hook.getPositionState(key.toId(), resultPosHash);
+        bytes32[] memory resultActivePosHashesByTickLower = hook.getPositionHashesByTickLower(key.toId(), tickLower);
+        bytes32[] memory resultActivePosHashesByTickUpper = hook.getPositionHashesByTickUpper(key.toId(), tickUpper);
+        uint256 resultActiveTickUppersCount = hook.getactiveTickUppersAscLength(key.toId());
+        uint256 resultActiveTickLowersCount = hook.getactiveTickLowersDescLength(key.toId());
+
+        // Is there a point to comparing the positions themselves?
+        assertEq(expectedPosHash, resultPosHash);
+        assertEq(expectedPosIsActive, resultPosIsActive);
+        assertEq(1, resultActivePosHashesByTickLower.length);
+        assertEq(1, resultActivePosHashesByTickUpper.length);
+        assertEq(1, resultActiveTickLowersCount);
+        assertEq(1, resultActiveTickUppersCount);
     }
 }
