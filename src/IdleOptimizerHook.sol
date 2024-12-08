@@ -22,14 +22,14 @@ import {IPool} from "@aave/core-v3/contracts/interfaces/IPool.sol";
 import {IAToken} from "@aave/core-v3/contracts/interfaces/IAToken.sol";
 import {DataTypes} from "@aave/core-v3/contracts/protocol/libraries/types/DataTypes.sol";
 
-contract OutOfRangeHook is BaseHook {
+contract IdleOptimizerHook is BaseHook {
     using StateLibrary for IPoolManager;
     using PoolIdLibrary for PoolKey;
     using CurrencyLibrary for Currency;
     using FixedPointMathLib for uint256;
     using MinHeapLib for MinHeapLib.Heap;
 
-    error OutOfRangeHook_IndexOutOfBound();
+    error IdleOptimizerHook_IndexOutOfBound();
 
     struct UnlockCallData {
         PoolKey key;
@@ -464,7 +464,7 @@ contract OutOfRangeHook is BaseHook {
 
     function _removeWithoutOrder(bytes32[] storage array, uint256 index) internal {
         if (index < array.length) {
-            revert OutOfRangeHook_IndexOutOfBound();
+            revert IdleOptimizerHook_IndexOutOfBound();
         }
         array[index] = array[array.length - 1];
         array.pop();
