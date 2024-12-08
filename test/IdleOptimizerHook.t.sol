@@ -96,12 +96,12 @@ contract IdleOptimizerHookTest is Test, Deployers {
         int24 tickLower = tick - key.tickSpacing;
         int24 tickUpper = tick + key.tickSpacing;
 
-        (uint128 liquidity,,) = hook.addLiquidity(key, tickLower, tickUpper, initialAmount0, initialAmount1);
+        (uint128 expectedLiquidityInPool,,) = hook.addLiquidity(key, tickLower, tickUpper, initialAmount0, initialAmount1);
 
         IdleOptimizerHook.Position memory expectedPosition = IdleOptimizerHook.Position({
             tickLower: tickLower,
             tickUpper: tickUpper,
-            liquidity: liquidity,
+            liquidity: expectedLiquidityInPool,
             owner: address(this),
             key: key
         });
@@ -115,6 +115,7 @@ contract IdleOptimizerHookTest is Test, Deployers {
         bytes32[] memory resultActivePosHashesByTickUpper = hook.getPositionHashesByTickUpper(key.toId(), tickUpper);
         uint256 resultActiveTickUppersCount = hook.getactiveTickUppersAscLength(key.toId());
         uint256 resultActiveTickLowersCount = hook.getactiveTickLowersDescLength(key.toId());
+        (uint128 resultLiquidityInPool,,) = manager.getPositionInfo(key.toId(), address(hook), tickLower, tickUpper, bytes32(0));
 
         // Is there a point to comparing the positions themselves?
         assertEq(expectedPosHash, resultPosHash);
@@ -123,5 +124,6 @@ contract IdleOptimizerHookTest is Test, Deployers {
         assertEq(1, resultActivePosHashesByTickUpper.length);
         assertEq(1, resultActiveTickLowersCount);
         assertEq(1, resultActiveTickUppersCount);
+        assertEq(expectedLiquidityInPool, resultLiquidityInPool);
     }
 }

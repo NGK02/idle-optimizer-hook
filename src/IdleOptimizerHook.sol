@@ -136,6 +136,11 @@ contract IdleOptimizerHook is BaseHook {
         (uint128 liquidity, uint256 trueAmount0, uint256 trueAmount1) =
             _calculateAmountsAndLiquidity(key, tickLower, tickUpper, amount0, amount1);
 
+        console.log("`amount0`: ", amount0);
+        console.log("`amount1`: ", amount1);
+        console.log("`trueAmount0`: ", trueAmount0);
+        console.log("`trueAmount1`: ", trueAmount1);
+
         IERC20(Currency.unwrap(key.currency0)).transferFrom(msg.sender, address(this), trueAmount0);
         IERC20(Currency.unwrap(key.currency1)).transferFrom(msg.sender, address(this), trueAmount1);
 
@@ -169,7 +174,7 @@ contract IdleOptimizerHook is BaseHook {
             console.log("`currentTick`: ", currentTick);
             console.log("`tickLower`: ", tickLower);
             console.log("`tickUpper`: ", tickUpper);
-            
+
             // Not sure if i should use `trueAmount0` and `trueAmount1` here or `amount0` and `amount1`.
             _addLiquidityFromHookToLending(posHash, key, trueAmount0, trueAmount1);
 
@@ -244,6 +249,8 @@ contract IdleOptimizerHook is BaseHook {
     // ------------------
 
     function _unlockCallback(bytes calldata data) internal override returns (bytes memory) {
+        console.log("`_unlockCallback` reached!");
+
         UnlockCallData memory unlockData = abi.decode(data, (UnlockCallData));
 
         (BalanceDelta balanceDelta,) =
@@ -467,8 +474,13 @@ contract IdleOptimizerHook is BaseHook {
         internal
         returns (uint256 absAmount0, uint256 absAmount1)
     {
+        console.log("`_settleAndTakeBalances` reached!");
+
         int128 amount0 = balanceDelta.amount0();
         int128 amount1 = balanceDelta.amount1();
+
+        console.log("`amount0`: ", amount0);
+        console.log("`amount1`: ", amount1);
 
         if (amount0 < 0) {
             absAmount0 = uint256(uint128(-amount0));
@@ -488,6 +500,8 @@ contract IdleOptimizerHook is BaseHook {
     }
 
     function _settle(Currency currency, uint256 amount) internal {
+        console.log("`_settle` reached!");
+
         // Transfer tokens to the PM and let it know
         poolManager.sync(currency);
         currency.transfer(address(poolManager), amount);
@@ -495,6 +509,8 @@ contract IdleOptimizerHook is BaseHook {
     }
 
     function _take(Currency currency, uint256 amount) internal {
+        console.log("`_take` reached!");
+
         // Transfer tokens from the PM
         poolManager.take(currency, address(this), amount);
     }
@@ -517,10 +533,10 @@ contract IdleOptimizerHook is BaseHook {
         int24 tickUpper,
         uint256 amount0,
         uint256 amount1
-    ) internal view returns (uint128 liquidityDelta, uint256 trueAmount0, uint256 trueAmount1) {
+    ) internal view returns (uint128 liquidity, uint256 trueAmount0, uint256 trueAmount1) {
         (uint160 sqrtPriceX96,,,) = poolManager.getSlot0(key.toId());
 
-        liquidityDelta = LiquidityAmounts.getLiquidityForAmounts(
+        liquidity = LiquidityAmounts.getLiquidityForAmounts(
             sqrtPriceX96,
             TickMath.getSqrtPriceAtTick(tickLower),
             TickMath.getSqrtPriceAtTick(tickUpper),
@@ -529,7 +545,15 @@ contract IdleOptimizerHook is BaseHook {
         );
 
         (trueAmount0, trueAmount1) = LiquidityAmounts.getAmountsForLiquidity(
-            sqrtPriceX96, TickMath.getSqrtPriceAtTick(tickLower), TickMath.getSqrtPriceAtTick(tickUpper), liquidityDelta
+            sqrtPriceX96, TickMath.getSqrtPriceAtTick(tickLower), TickMath.getSqrtPriceAtTick(tickUpper), liquidity
+        );
+
+        liquidity = LiquidityAmounts.getLiquidityForAmounts(
+            sqrtPriceX96,
+            TickMath.getSqrtPriceAtTick(tickLower),
+            TickMath.getSqrtPriceAtTick(tickUpper),
+            trueAmount0,
+            trueAmount1
         );
     }
 
