@@ -102,7 +102,7 @@ contract IdleOptimizerHookTest is Test, Deployers {
         int24 tickUpper = tick + key.tickSpacing;
         uint256 expectedToken0Balance = currency0.balanceOfSelf();
         uint256 expectedToken1Balance = currency1.balanceOfSelf();
-        
+
         (uint128 liquidity,,) = hook.addLiquidity(key, tickLower, tickUpper, initialAmount0, initialAmount1);
 
         IdleOptimizerHook.Position memory toBeRemovedPosition = IdleOptimizerHook.Position({
@@ -134,7 +134,7 @@ contract IdleOptimizerHookTest is Test, Deployers {
         assertEq(0, resultPosition.tickLower);
         assertEq(0, resultPosition.tickUpper);
         // How to compare the key for default value and is there a point?
-        
+
         assertEq(false, resultPosIsActive);
         assertEq(0, resultActivePosHashesByTickLower.length);
         assertEq(0, resultActivePosHashesByTickUpper.length);
