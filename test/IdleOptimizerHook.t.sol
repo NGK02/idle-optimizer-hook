@@ -50,44 +50,9 @@ contract IdleOptimizerHookTest is Test, Deployers {
 
         // Initialize a pool with these two tokens
         (key,) = initPool(token0, token1, hook, 3000, SQRT_PRICE_1_1);
-
-        // Add initial liquidity to the pool
-        // // Some liquidity from -60 to +60 tick range
-        // modifyLiquidityRouter.modifyLiquidity(
-        //     key,
-        //     IPoolManager.ModifyLiquidityParams({
-        //         tickLower: -60,
-        //         tickUpper: 60,
-        //         liquidityDelta: 10 ether,
-        //         salt: bytes32(0)
-        //     }),
-        //     ZERO_BYTES
-        // );
-        // // Some liquidity from -120 to +120 tick range
-        // modifyLiquidityRouter.modifyLiquidity(
-        //     key,
-        //     IPoolManager.ModifyLiquidityParams({
-        //         tickLower: -120,
-        //         tickUpper: 120,
-        //         liquidityDelta: 10 ether,
-        //         salt: bytes32(0)
-        //     }),
-        //     ZERO_BYTES
-        // );
-        // // some liquidity for full range
-        // modifyLiquidityRouter.modifyLiquidity(
-        //     key,
-        //     IPoolManager.ModifyLiquidityParams({
-        //         tickLower: TickMath.minUsableTick(60),
-        //         tickUpper: TickMath.maxUsableTick(60),
-        //         liquidityDelta: 10 ether,
-        //         salt: bytes32(0)
-        //     }),
-        //     ZERO_BYTES
-        // );
     }
 
-    function test_addLiquidityInRange() public {
+    function test_addLiquidityAddsLiquidityToPoolandUpdatesState() public {
         console.log("`test_addLiquidityInRange` reached!");
 
         (, int24 tick,,) = manager.getSlot0(key.toId());
@@ -107,8 +72,9 @@ contract IdleOptimizerHookTest is Test, Deployers {
             key: key
         });
         bytes32 expectedPosHash = keccak256(abi.encode(expectedPosition));
-        bool expectedPosIsActive = true;
 
+        (uint128 resultLiquidityInPool,,) =
+            manager.getPositionInfo(key.toId(), address(hook), tickLower, tickUpper, bytes32(0));
         IdleOptimizerHook.Position memory resultPosition = hook.getPosition(key.toId(), expectedPosHash);
         bytes32 resultPosHash = keccak256(abi.encode(resultPosition));
         bool resultPosIsActive = hook.getPositionState(key.toId(), resultPosHash);
@@ -116,16 +82,68 @@ contract IdleOptimizerHookTest is Test, Deployers {
         bytes32[] memory resultActivePosHashesByTickUpper = hook.getPositionHashesByTickUpper(key.toId(), tickUpper);
         uint256 resultActiveTickUppersCount = hook.getactiveTickUppersAscLength(key.toId());
         uint256 resultActiveTickLowersCount = hook.getactiveTickLowersDescLength(key.toId());
-        (uint128 resultLiquidityInPool,,) =
-            manager.getPositionInfo(key.toId(), address(hook), tickLower, tickUpper, bytes32(0));
 
         // Is there a point to comparing the positions themselves?
         assertEq(expectedPosHash, resultPosHash);
-        assertEq(expectedPosIsActive, resultPosIsActive);
+        assertEq(true, resultPosIsActive);
         assertEq(1, resultActivePosHashesByTickLower.length);
         assertEq(1, resultActivePosHashesByTickUpper.length);
         assertEq(1, resultActiveTickLowersCount);
         assertEq(1, resultActiveTickUppersCount);
         assertEq(expectedLiquidityInPool, resultLiquidityInPool);
+    }
+
+    function test_removeLiquidityRemovesLiquidityFromPoolAndUpdatesState() public {
+        // Arrange
+        (, int24 tick,,) = manager.getSlot0(key.toId());
+        uint256 initialAmount0 = 1 ether;
+        uint256 initialAmount1 = 1 ether;
+        int24 tickLower = tick - key.tickSpacing;
+        int24 tickUpper = tick + key.tickSpacing;
+        uint256 expectedToken0Balance = currency0.balanceOfSelf();
+        uint256 expectedToken1Balance = currency1.balanceOfSelf();
+        
+        (uint128 liquidity,,) = hook.addLiquidity(key, tickLower, tickUpper, initialAmount0, initialAmount1);
+
+        IdleOptimizerHook.Position memory toBeRemovedPosition = IdleOptimizerHook.Position({
+            tickLower: tickLower,
+            tickUpper: tickUpper,
+            liquidity: liquidity,
+            owner: address(this),
+            key: key
+        });
+        bytes32 toBeRemovedPosHash = keccak256(abi.encode(toBeRemovedPosition));
+
+        // Act
+        (, uint256 amount0, uint256 amount1) = hook.removeLiquidity(key, tickLower, tickUpper, liquidity);
+
+        (uint128 resultLiquidityInPool,,) =
+            manager.getPositionInfo(key.toId(), address(hook), tickLower, tickUpper, bytes32(0));
+        bool resultPosIsActive = hook.getPositionState(key.toId(), toBeRemovedPosHash);
+        IdleOptimizerHook.Position memory resultPosition = hook.getPosition(key.toId(), toBeRemovedPosHash);
+        bytes32[] memory resultActivePosHashesByTickLower = hook.getPositionHashesByTickLower(key.toId(), tickLower);
+        bytes32[] memory resultActivePosHashesByTickUpper = hook.getPositionHashesByTickUpper(key.toId(), tickUpper);
+        uint256 resultActiveTickUppersCount = hook.getactiveTickUppersAscLength(key.toId());
+        uint256 resultActiveTickLowersCount = hook.getactiveTickLowersDescLength(key.toId());
+        uint256 resultToken0Balance = currency0.balanceOfSelf();
+        uint256 resultToken1Balance = currency1.balanceOfSelf();
+
+        // Assert
+        assertEq(0, resultPosition.liquidity);
+        assertEq(address(0), resultPosition.owner);
+        assertEq(0, resultPosition.tickLower);
+        assertEq(0, resultPosition.tickUpper);
+        // How to compare the key for default value and is there a point?
+        
+        assertEq(false, resultPosIsActive);
+        assertEq(0, resultActivePosHashesByTickLower.length);
+        assertEq(0, resultActivePosHashesByTickUpper.length);
+        assertEq(0, resultLiquidityInPool);
+        assertApproxEqAbs(expectedToken0Balance, resultToken0Balance, 1);
+        assertApproxEqAbs(expectedToken1Balance, resultToken1Balance, 1);
+        // assertEq(0, resultActiveTickLowersCount);
+        // assertEq(0, resultActiveTickUppersCount);
+        // Not updating these on `removeLiquidity` at the moment, might do it at some point,
+        // but not sure if it's worth it or it would take too much gas compared to removing them later.
     }
 }
