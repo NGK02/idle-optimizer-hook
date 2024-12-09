@@ -16,6 +16,8 @@ import {TickMath} from "v4-core/libraries/TickMath.sol";
 
 import {MockERC20} from "solmate/src/test/utils/mocks/MockERC20.sol";
 
+import {LendingPoolMock} from "./mocks/LendingPoolMock.sol";
+
 import {IdleOptimizerHook} from "../src/IdleOptimizerHook.sol";
 
 contract IdleOptimizerHookTest is Test, Deployers {
@@ -25,6 +27,7 @@ contract IdleOptimizerHookTest is Test, Deployers {
 
     Currency token0;
     Currency token1;
+    LendingPoolMock lendingPool;
 
     IdleOptimizerHook hook;
 
@@ -34,6 +37,9 @@ contract IdleOptimizerHookTest is Test, Deployers {
         // Deploy v4 core contracts
         deployFreshManagerAndRouters();
 
+        // Deploy lending pool mock
+        lendingPool = new LendingPoolMock();
+
         // Deploy two test tokens
         (token0, token1) = deployMintAndApprove2Currencies();
 
@@ -41,7 +47,7 @@ contract IdleOptimizerHookTest is Test, Deployers {
         uint160 flags = uint160(Hooks.AFTER_SWAP_FLAG);
         address hookAddress = address(flags);
         // TODO: Add a dummy implementation of the lending pool contract for testing.
-        deployCodeTo("IdleOptimizerHook.sol", abi.encode(manager, address(0)), hookAddress);
+        deployCodeTo("IdleOptimizerHook.sol", abi.encode(manager, address(lendingPool)), hookAddress);
         hook = IdleOptimizerHook(hookAddress);
 
         // Approve our hook address to spend these tokens as well
@@ -115,7 +121,7 @@ contract IdleOptimizerHookTest is Test, Deployers {
         bytes32 toBeRemovedPosHash = keccak256(abi.encode(toBeRemovedPosition));
 
         // Act
-        (, uint256 amount0, uint256 amount1) = hook.removeLiquidity(key, tickLower, tickUpper, liquidity);
+        hook.removeLiquidity(key, tickLower, tickUpper, liquidity);
 
         (uint128 resultLiquidityInPool,,) =
             manager.getPositionInfo(key.toId(), address(hook), tickLower, tickUpper, bytes32(0));
@@ -123,8 +129,6 @@ contract IdleOptimizerHookTest is Test, Deployers {
         IdleOptimizerHook.Position memory resultPosition = hook.getPosition(key.toId(), toBeRemovedPosHash);
         bytes32[] memory resultActivePosHashesByTickLower = hook.getPositionHashesByTickLower(key.toId(), tickLower);
         bytes32[] memory resultActivePosHashesByTickUpper = hook.getPositionHashesByTickUpper(key.toId(), tickUpper);
-        uint256 resultActiveTickUppersCount = hook.getactiveTickUppersAscLength(key.toId());
-        uint256 resultActiveTickLowersCount = hook.getactiveTickLowersDescLength(key.toId());
         uint256 resultToken0Balance = currency0.balanceOfSelf();
         uint256 resultToken1Balance = currency1.balanceOfSelf();
 
@@ -141,6 +145,8 @@ contract IdleOptimizerHookTest is Test, Deployers {
         assertEq(0, resultLiquidityInPool);
         assertApproxEqAbs(expectedToken0Balance, resultToken0Balance, 1);
         assertApproxEqAbs(expectedToken1Balance, resultToken1Balance, 1);
+        // uint256 resultActiveTickUppersCount = hook.getactiveTickUppersAscLength(key.toId());
+        // uint256 resultActiveTickLowersCount = hook.getactiveTickLowersDescLength(key.toId());
         // assertEq(0, resultActiveTickLowersCount);
         // assertEq(0, resultActiveTickUppersCount);
         // Not updating these on `removeLiquidity` at the moment, might do it at some point,
