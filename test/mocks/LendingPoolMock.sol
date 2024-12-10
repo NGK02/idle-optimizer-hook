@@ -7,7 +7,7 @@ contract LendingPoolMock {
     mapping(address user => mapping(address asset => uint256 amount)) public balances;
     mapping(address asset => uint256) public totalSupplied; // asset address => total amount supplied
 
-    function supply(address asset, uint256 amount, address onBehalfOf, uint16 /*referralCode*/) external {
+    function supply(address asset, uint256 amount, address onBehalfOf, uint16 /*referralCode*/ ) external {
         MockERC20(asset).transferFrom(msg.sender, address(this), amount);
         balances[onBehalfOf][asset] += amount;
         totalSupplied[asset] += amount;

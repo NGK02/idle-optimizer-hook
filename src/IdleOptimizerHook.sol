@@ -141,8 +141,12 @@ contract IdleOptimizerHook is BaseHook {
         console.log("`trueAmount0`: ", trueAmount0);
         console.log("`trueAmount1`: ", trueAmount1);
 
-        IERC20(Currency.unwrap(key.currency0)).transferFrom(msg.sender, address(this), trueAmount0);
-        IERC20(Currency.unwrap(key.currency1)).transferFrom(msg.sender, address(this), trueAmount1);
+        if (trueAmount0 > 0) {
+            IERC20(Currency.unwrap(key.currency0)).transferFrom(msg.sender, address(this), trueAmount0);
+        }
+        if (trueAmount1 > 0) {
+            IERC20(Currency.unwrap(key.currency1)).transferFrom(msg.sender, address(this), trueAmount1);
+        }
 
         Position memory position =
             Position({tickLower: tickLower, tickUpper: tickUpper, liquidity: liquidity, owner: msg.sender, key: key});
@@ -172,6 +176,8 @@ contract IdleOptimizerHook is BaseHook {
             console.log("`currentTick`: ", currentTick);
             console.log("`tickLower`: ", tickLower);
             console.log("`tickUpper`: ", tickUpper);
+            console.log("`token0`: ", Currency.unwrap(key.currency0));
+            console.log("`token1`: ", Currency.unwrap(key.currency1));
 
             // Not sure if i should use `trueAmount0` and `trueAmount1` here or `amount0` and `amount1`.
             _addLiquidityFromHookToLending(posHash, key, trueAmount0, trueAmount1);
@@ -437,10 +443,13 @@ contract IdleOptimizerHook is BaseHook {
     function _addLiquidityFromHookToLending(bytes32 positionHash, PoolKey memory key, uint256 amount0, uint256 amount1)
         internal
     {
-        Position memory position = posByHash[key.toId()][positionHash];
+        console.log("`_addLiquidityFromHookToLending` reached!");
 
-        address token0 = Currency.unwrap(position.key.currency0);
-        address token1 = Currency.unwrap(position.key.currency1);
+        address token0 = Currency.unwrap(key.currency0);
+        address token1 = Currency.unwrap(key.currency1);
+
+        console.log("`token0`: ", token0);
+        console.log("`token1`: ", token1);
 
         if (amount0 > 0) {
             IERC20(token0).approve(address(lendingPool), amount0);

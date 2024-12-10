@@ -34,27 +34,27 @@ contract IdleOptimizerHookTest is Test, Deployers {
     function setUp() public {
         console.log("`setUp` reached!");
 
-        // Deploy v4 core contracts
+        // Deploy v4 core contracts.
         deployFreshManagerAndRouters();
 
-        // Deploy lending pool mock
+        // Deploy lending pool mock.
         lendingPool = new LendingPoolMock();
 
-        // Deploy two test tokens
+        // Deploy two test tokens.
         (token0, token1) = deployMintAndApprove2Currencies();
 
-        // Deploy our hook
+        // Deploy our hook.
         uint160 flags = uint160(Hooks.AFTER_SWAP_FLAG);
         address hookAddress = address(flags);
         // TODO: Add a dummy implementation of the lending pool contract for testing.
         deployCodeTo("IdleOptimizerHook.sol", abi.encode(manager, address(lendingPool)), hookAddress);
         hook = IdleOptimizerHook(hookAddress);
 
-        // Approve our hook address to spend these tokens as well
+        // Approve our hook address to spend these tokens as well.
         MockERC20(Currency.unwrap(token0)).approve(address(hook), type(uint256).max);
         MockERC20(Currency.unwrap(token1)).approve(address(hook), type(uint256).max);
 
-        // Initialize a pool with these two tokens
+        // Initialize a pool with these two tokens.
         (key,) = initPool(token0, token1, hook, 3000, SQRT_PRICE_1_1);
     }
 
@@ -97,6 +97,61 @@ contract IdleOptimizerHookTest is Test, Deployers {
         assertEq(1, resultActiveTickLowersCount);
         assertEq(1, resultActiveTickUppersCount);
         assertEq(expectedLiquidityInPool, resultLiquidityInPool);
+    }
+
+    function test_addLiquidityOutOfRangePutsLiquidityInLendingPool() public {
+        console.log("`test_addLiquidityOutOfRangePutsLiquidityInLendingPool` reached!");
+
+        // Arrange
+        (, int24 tick,,) = manager.getSlot0(key.toId());
+        uint256 initialAmount0 = 1 ether;
+        uint256 initialAmount1 = 1 ether;
+        int24 tickUpper = tick - 1000;
+        int24 tickLower = tickUpper - 1000;
+        // Choose `tickLower` and `tickUpper` such that `tick` is outside the range (for ex. `tick` > `tickHigher`).
+
+        // Act
+        console.log("`token0`: ", Currency.unwrap(key.currency0));
+        console.log("`token1`: ", Currency.unwrap(key.currency1));
+        (uint128 liquidity, uint256 expectedToken0InLendingPool, uint256 expectedToken1InLendingPool) =
+            hook.addLiquidity(key, tickLower, tickUpper, initialAmount0, initialAmount1);
+
+        // Now verify that the tokens have been supplied to the lending pool.
+        IdleOptimizerHook.Position memory expectedPosition = IdleOptimizerHook.Position({
+            tickLower: tickLower,
+            tickUpper: tickUpper,
+            liquidity: liquidity,
+            owner: address(this),
+            key: key
+        });
+        bytes32 expectedPosHash = keccak256(abi.encode(expectedPosition));
+
+        uint256 resultToken0InLendingPool = MockERC20(Currency.unwrap(token0)).balanceOf(address(lendingPool));
+        uint256 resultToken1InLendingPool = MockERC20(Currency.unwrap(token1)).balanceOf(address(lendingPool));
+        (uint128 resultLiquidityInPool,,) =
+            manager.getPositionInfo(key.toId(), address(hook), tickLower, tickUpper, bytes32(0));
+        IdleOptimizerHook.Position memory resultPosition = hook.getPosition(key.toId(), expectedPosHash);
+        bytes32 resultPosHash = keccak256(abi.encode(resultPosition));
+        bool resultPosIsActive = hook.getPositionState(key.toId(), resultPosHash);
+        bytes32[] memory inactivePositionHashes = hook.getInactivePositionHashes(key.toId());
+        IdleOptimizerHook.LendingPosition memory lendingPosition = hook.getLendingPosition(expectedPosHash);
+
+        assertEq(
+            resultToken0InLendingPool, expectedToken0InLendingPool, "Token0 not correctly supplied to lending pool!"
+        );
+        assertEq(
+            resultToken1InLendingPool, expectedToken1InLendingPool, "Token1 not correctly supplied to lending pool!"
+        );
+        assertEq(resultLiquidityInPool, 0, "Liquidity should not be added to the Uniswap pool!");
+
+        assertEq(expectedPosHash, resultPosHash, "Position hash mismatch!");
+        assertFalse(resultPosIsActive, "Position state mismatch!");
+        assertEq(inactivePositionHashes.length, 1, "There should be one inactive position!");
+        assertEq(inactivePositionHashes[0], expectedPosHash, "The inactive position hash should match!");
+        assertEq(lendingPosition.token0, Currency.unwrap(token0), "`LendingPosition` mismatch!");
+        assertEq(lendingPosition.token1, Currency.unwrap(token1), "`LendingPosition` mismatch!");
+        assertEq(lendingPosition.amount0, expectedToken0InLendingPool, "`LendingPosition` mismatch!");
+        assertEq(lendingPosition.amount1, expectedToken1InLendingPool, "`LendingPosition` mismatch!");
     }
 
     function test_removeLiquidityRemovesLiquidityFromPoolAndUpdatesState() public {
