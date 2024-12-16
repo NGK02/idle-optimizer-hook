@@ -232,6 +232,10 @@ contract IdleOptimizerHook is BaseHook {
             bytes32[] storage inactivePositions = inactivePositionHashes[key.toId()];
             for (uint256 i = 0; i < inactivePositions.length; i++) {
                 if (posHash == inactivePositions[i]) {
+                    console.log("Liquidity removed, updating state!");
+                    console.log("`i`: ", i);
+                    console.log("`inactivePositions[i]`: ");
+                    console.logBytes32(inactivePositions[i]);
                     _removeWithoutOrder(inactivePositions, i);
                     break;
                 }
@@ -527,7 +531,7 @@ contract IdleOptimizerHook is BaseHook {
     // ----------------
 
     function _removeWithoutOrder(bytes32[] storage array, uint256 index) internal {
-        if (index < array.length) {
+        if (index > array.length) {
             revert IdleOptimizerHook_IndexOutOfBound();
         }
         array[index] = array[array.length - 1];

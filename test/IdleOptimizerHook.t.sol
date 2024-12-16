@@ -58,7 +58,11 @@ contract IdleOptimizerHookTest is Test, Deployers {
         (key,) = initPool(token0, token1, hook, 3000, SQRT_PRICE_1_1);
     }
 
-    function test_addLiquidityAddsLiquidityToPoolandUpdatesState() public {
+    // --------------------
+    // `addLiquidity` tests
+    // --------------------
+
+    function test_addLiquidityAddsLiquidityToUniPoolAndUpdatesState() public {
         console.log("`test_addLiquidityInRange` reached!");
 
         (, int24 tick,,) = manager.getSlot0(key.toId());
@@ -91,7 +95,7 @@ contract IdleOptimizerHookTest is Test, Deployers {
 
         // Is there a point to comparing the positions themselves?
         assertEq(expectedPosHash, resultPosHash);
-        assertEq(true, resultPosIsActive);
+        assertTrue(resultPosIsActive);
         assertEq(1, resultActivePosHashesByTickLower.length);
         assertEq(1, resultActivePosHashesByTickUpper.length);
         assertEq(1, resultActiveTickLowersCount);
@@ -99,15 +103,15 @@ contract IdleOptimizerHookTest is Test, Deployers {
         assertEq(expectedLiquidityInPool, resultLiquidityInPool);
     }
 
-    function test_addLiquidityOutOfRangePutsLiquidityInLendingPool() public {
+    function test_addLiquidityAddsLiquidityToLendingAndUpdatesState() public {
         console.log("`test_addLiquidityOutOfRangePutsLiquidityInLendingPool` reached!");
 
         // Arrange
         (, int24 tick,,) = manager.getSlot0(key.toId());
         uint256 initialAmount0 = 1 ether;
         uint256 initialAmount1 = 1 ether;
-        int24 tickUpper = tick - 1000;
-        int24 tickLower = tickUpper - 1000;
+        int24 tickUpper = tick - key.tickSpacing;
+        int24 tickLower = tickUpper - key.tickSpacing;
         // Choose `tickLower` and `tickUpper` such that `tick` is outside the range (for ex. `tick` > `tickHigher`).
 
         // Act
@@ -136,31 +140,34 @@ contract IdleOptimizerHookTest is Test, Deployers {
         bytes32[] memory inactivePositionHashes = hook.getInactivePositionHashes(key.toId());
         IdleOptimizerHook.LendingPosition memory lendingPosition = hook.getLendingPosition(expectedPosHash);
 
-        assertEq(
-            resultToken0InLendingPool, expectedToken0InLendingPool, "Token0 not correctly supplied to lending pool!"
-        );
-        assertEq(
-            resultToken1InLendingPool, expectedToken1InLendingPool, "Token1 not correctly supplied to lending pool!"
-        );
-        assertEq(resultLiquidityInPool, 0, "Liquidity should not be added to the Uniswap pool!");
+        assertEq(resultToken0InLendingPool, expectedToken0InLendingPool);
+        assertEq(resultToken1InLendingPool, expectedToken1InLendingPool);
+        assertEq(resultLiquidityInPool, 0);
 
-        assertEq(expectedPosHash, resultPosHash, "Position hash mismatch!");
-        assertFalse(resultPosIsActive, "Position state mismatch!");
-        assertEq(inactivePositionHashes.length, 1, "There should be one inactive position!");
-        assertEq(inactivePositionHashes[0], expectedPosHash, "The inactive position hash should match!");
-        assertEq(lendingPosition.token0, Currency.unwrap(token0), "`LendingPosition` mismatch!");
-        assertEq(lendingPosition.token1, Currency.unwrap(token1), "`LendingPosition` mismatch!");
-        assertEq(lendingPosition.amount0, expectedToken0InLendingPool, "`LendingPosition` mismatch!");
-        assertEq(lendingPosition.amount1, expectedToken1InLendingPool, "`LendingPosition` mismatch!");
+        assertEq(expectedPosHash, resultPosHash);
+        assertFalse(resultPosIsActive);
+        assertEq(inactivePositionHashes.length, 1);
+        assertEq(inactivePositionHashes[0], expectedPosHash);
+        assertEq(lendingPosition.token0, Currency.unwrap(token0));
+        assertEq(lendingPosition.token1, Currency.unwrap(token1));
+        assertEq(lendingPosition.amount0, expectedToken0InLendingPool);
+        assertEq(lendingPosition.amount1, expectedToken1InLendingPool);
     }
 
-    function test_removeLiquidityRemovesLiquidityFromPoolAndUpdatesState() public {
+    // -----------------------
+    // `removeLiquidity` tests
+    // -----------------------
+
+    function test_removeLiquidityRemovesLiquidityFromUniPoolAndUpdatesState() public {
         // Arrange
         (, int24 tick,,) = manager.getSlot0(key.toId());
         uint256 initialAmount0 = 1 ether;
         uint256 initialAmount1 = 1 ether;
         int24 tickLower = tick - key.tickSpacing;
         int24 tickUpper = tick + key.tickSpacing;
+        // TODO: Should compare the initial balance after adding liquidity
+        // minus the removed liquidity being equal to the final balance.
+        // I got `IdleOptimizerHook_IndexOutOfBound()` when i initially tried that.
         uint256 expectedToken0Balance = currency0.balanceOfSelf();
         uint256 expectedToken1Balance = currency1.balanceOfSelf();
 
@@ -194,7 +201,7 @@ contract IdleOptimizerHookTest is Test, Deployers {
         assertEq(0, resultPosition.tickUpper);
         // How to compare the key for default value and is there a point?
 
-        assertEq(false, resultPosIsActive);
+        assertFalse(resultPosIsActive);
         assertEq(0, resultActivePosHashesByTickLower.length);
         assertEq(0, resultActivePosHashesByTickUpper.length);
         assertEq(0, resultLiquidityInPool);
@@ -206,5 +213,63 @@ contract IdleOptimizerHookTest is Test, Deployers {
         // assertEq(0, resultActiveTickUppersCount);
         // Not updating these on `removeLiquidity` at the moment, might do it at some point,
         // but not sure if it's worth it or it would take too much gas compared to removing them later.
+    }
+
+    function test_removeLiquidityRemovesLiquidityFromLendingAndUpdatesState() public {
+        // Arrange
+        (, int24 tick,,) = manager.getSlot0(key.toId());
+        uint256 initialAmount0 = 1 ether;
+        uint256 initialAmount1 = 1 ether;
+        int24 tickUpper = tick - key.tickSpacing;
+        int24 tickLower = tickUpper - key.tickSpacing;
+        // TODO: Should compare the initial balance after adding liquidity
+        // minus the removed liquidity being equal to the final balance.
+        uint256 expectedToken0Balance = currency0.balanceOfSelf();
+        uint256 expectedToken1Balance = currency1.balanceOfSelf();
+        uint256 expectedLendingPoolToken0Balance = MockERC20(Currency.unwrap(token0)).balanceOf(address(lendingPool));
+        uint256 expectedLendingPoolToken1Balance = MockERC20(Currency.unwrap(token1)).balanceOf(address(lendingPool));
+
+        (uint128 liquidity,,) = hook.addLiquidity(key, tickLower, tickUpper, initialAmount0, initialAmount1);
+
+        IdleOptimizerHook.Position memory toBeRemovedPosition = IdleOptimizerHook.Position({
+            tickLower: tickLower,
+            tickUpper: tickUpper,
+            liquidity: liquidity,
+            owner: address(this),
+            key: key
+        });
+        bytes32 toBeRemovedPosHash = keccak256(abi.encode(toBeRemovedPosition));
+
+        // Act
+        hook.removeLiquidity(key, tickLower, tickUpper, liquidity);
+
+        // Assert
+        uint256 finalLendingPoolToken0Balance = MockERC20(Currency.unwrap(token0)).balanceOf(address(lendingPool));
+        uint256 finalLendingPoolToken1Balance = MockERC20(Currency.unwrap(token1)).balanceOf(address(lendingPool));
+
+        uint256 finalToken0Balance = currency0.balanceOfSelf();
+        uint256 finalToken1Balance = currency1.balanceOfSelf();
+
+        bool resultPosIsActive = hook.getPositionState(key.toId(), toBeRemovedPosHash);
+        IdleOptimizerHook.Position memory resultPosition = hook.getPosition(key.toId(), toBeRemovedPosHash);
+        bytes32[] memory inactivePositionHashes = hook.getInactivePositionHashes(key.toId());
+        IdleOptimizerHook.LendingPosition memory lendingPosition = hook.getLendingPosition(toBeRemovedPosHash);
+
+        assertApproxEqAbs(finalLendingPoolToken0Balance, expectedLendingPoolToken0Balance, 1);
+        assertApproxEqAbs(finalLendingPoolToken1Balance, expectedLendingPoolToken1Balance, 1);
+
+        assertApproxEqAbs(finalToken0Balance, expectedToken0Balance, 1);
+        assertApproxEqAbs(finalToken1Balance, expectedToken1Balance, 1);
+
+        assertFalse(resultPosIsActive);
+        assertEq(resultPosition.liquidity, 0);
+        assertEq(resultPosition.owner, address(0));
+
+        assertEq(inactivePositionHashes.length, 0);
+
+        assertEq(lendingPosition.token0, address(0));
+        assertEq(lendingPosition.token1, address(0));
+        assertEq(lendingPosition.amount0, 0);
+        assertEq(lendingPosition.amount1, 0);
     }
 }
