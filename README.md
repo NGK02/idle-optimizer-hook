@@ -2,6 +2,7 @@
 ![smallLogo](https://github.com/user-attachments/assets/7ca33a05-dfb5-4d9f-9718-38baab48f384)
 
 ## Introduction
+DISCLAIMER: This project is still a rough PoC and should not be used as production code!
 A capital optimization Uniswap v4 hook that automatically deploys out-of-range Uniswap v4 liquidity to lending protocols and returns it to the pool when prices move back into range, eliminating idle capital while preserving liquidity functionality. This hook was created as part of the Uniswap Hook Incubator 3 hookathon.
 
 ## What can you do with this hook?
